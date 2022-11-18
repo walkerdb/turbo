@@ -51,6 +51,11 @@ func Test_ReadTurboConfig(t *testing.T) {
 			TaskDependencies:        []string{},
 			ShouldCache:             true,
 			OutputMode:              util.NewTaskOutput,
+			Raw: map[string]interface{}{
+				"dependsOn":  []interface{}{"^build"},
+				"outputs":    []interface{}{"dist/**", "!dist/assets/**", ".next/**"},
+				"outputMode": "new-only",
+			},
 		},
 		"lint": {
 			Outputs:                 TaskOutputs{},
@@ -59,6 +64,12 @@ func Test_ReadTurboConfig(t *testing.T) {
 			TaskDependencies:        []string{},
 			ShouldCache:             true,
 			OutputMode:              util.NewTaskOutput,
+			Raw: map[string]interface{}{
+				"outputs":    []interface{}{},
+				"dependsOn":  []interface{}{"$MY_VAR"},
+				"cache":      true,
+				"outputMode": "new-only",
+			},
 		},
 		"dev": {
 			Outputs:                 TaskOutputs{},
@@ -67,6 +78,10 @@ func Test_ReadTurboConfig(t *testing.T) {
 			TaskDependencies:        []string{},
 			ShouldCache:             false,
 			OutputMode:              util.FullTaskOutput,
+			Raw: map[string]interface{}{
+				"cache":      false,
+				"outputMode": "full",
+			},
 		},
 		"publish": {
 			Outputs:                 TaskOutputs{Inclusions: []string{"dist/**"}},
@@ -76,6 +91,12 @@ func Test_ReadTurboConfig(t *testing.T) {
 			ShouldCache:             false,
 			Inputs:                  []string{"build/**/*"},
 			OutputMode:              util.FullTaskOutput,
+			Raw: map[string]interface{}{
+				"outputs":   []interface{}{"dist/**"},
+				"inputs":    []interface{}{"build/**/*"},
+				"dependsOn": []interface{}{"^publish", "^build", "build", "admin#lint"},
+				"cache":     false,
+			},
 		},
 	}
 
@@ -95,10 +116,26 @@ func Test_ReadTurboConfig_Legacy(t *testing.T) {
 		t.Fatalf("invalid parse: %#v", pkgJSONReadErr)
 	}
 
-	_, turboJSONReadErr := ReadTurboConfig(testDir, rootPackageJSON)
+	turboJSON, turboJSONReadErr := ReadTurboConfig(testDir, rootPackageJSON)
 
-	expectedErrorMsg := "Could not find turbo.json. Follow directions at https://turbo.build/repo/docs to create one: file does not exist"
-	assert.EqualErrorf(t, turboJSONReadErr, expectedErrorMsg, "Error should be: %v, got: %v", expectedErrorMsg, turboJSONReadErr)
+	if turboJSONReadErr != nil {
+		t.Fatalf("invalid parse: %#v", turboJSONReadErr)
+	}
+
+	pipelineExpected := map[string]TaskDefinition{
+		"build": {
+			Outputs:                 TaskOutputs{},
+			TopologicalDependencies: []string{},
+			EnvVarDependencies:      []string{},
+			TaskDependencies:        []string{},
+			ShouldCache:             true,
+			OutputMode:              util.FullTaskOutput,
+			Raw:                     map[string]interface{}{},
+		},
+	}
+
+	validateOutput(t, turboJSON, pipelineExpected)
+	assert.Empty(t, turboJSON.RemoteCacheOptions)
 }
 
 func Test_ReadTurboConfig_BothCorrectAndLegacy(t *testing.T) {
@@ -119,12 +156,20 @@ func Test_ReadTurboConfig_BothCorrectAndLegacy(t *testing.T) {
 
 	pipelineExpected := map[string]TaskDefinition{
 		"build": {
-			Outputs:                 TaskOutputs{Inclusions: []string{".next/**", "dist/**"}, Exclusions: []string{"dist/assets/**"}},
+			Outputs: TaskOutputs{
+				Inclusions: []string{".next/**", "dist/**"},
+				Exclusions: []string{"dist/assets/**"},
+			},
 			TopologicalDependencies: []string{"build"},
 			EnvVarDependencies:      []string{},
 			TaskDependencies:        []string{},
 			ShouldCache:             true,
 			OutputMode:              util.NewTaskOutput,
+			Raw: map[string]interface{}{
+				"dependsOn":  []interface{}{"^build"},
+				"outputs":    []interface{}{"dist/**", ".next/**", "!dist/assets/**"},
+				"outputMode": "new-only",
+			},
 		},
 	}
 
