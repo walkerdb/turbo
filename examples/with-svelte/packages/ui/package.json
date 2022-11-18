@@ -4,7 +4,6 @@
   "description": "Styles and components for use in svelte websites",
   "type": "module",
   "module": "index.ts",
-  "main": "index.ts",
   "svelte": "index.ts",
   "license": "MIT",
   "scripts": {
