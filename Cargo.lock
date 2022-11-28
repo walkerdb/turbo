@@ -6369,6 +6369,7 @@ dependencies = [
  "any_key",
  "anyhow",
  "bitflags",
+ "concurrent-queue",
  "dashmap",
  "erased-serde",
  "event-listener",
