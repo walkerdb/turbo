@@ -8,7 +8,7 @@ use std::{
     hash::Hash,
     mem::{replace, take},
     pin::Pin,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::Result;
@@ -17,7 +17,7 @@ use tokio::task_local;
 use turbo_tasks::{
     backend::PersistentTaskType,
     event::{Event, EventListener},
-    get_invalidator, registry, CellId, FunctionId, Invalidator, RawVc, SmallDuration, TaskId,
+    get_invalidator, registry, CellId, FunctionId, Invalidator, RawVc, StatsType, TaskId,
     TaskInput, TraitTypeId, TurboTasksBackendApi, ValueTypeId,
 };
 pub type NativeTaskFuture = Pin<Box<dyn Future<Output = Result<RawVc>> + Send>>;
@@ -144,13 +144,11 @@ struct TaskState {
     cells: HashMap<ValueTypeId, Vec<Cell>>,
 
     // Stats:
-    executions: u32,
-    total_duration: Duration,
-    last_duration: SmallDuration,
+    stats: TaskStats,
 }
 
 impl TaskState {
-    fn new(id: TaskId) -> Self {
+    fn new(id: TaskId, stats_type: StatsType) -> Self {
         Self {
             scopes: Default::default(),
             state_type: Dirty {
@@ -160,15 +158,13 @@ impl TaskState {
             collectibles: Default::default(),
             output: Default::default(),
             cells: Default::default(),
-            executions: Default::default(),
-            total_duration: Default::default(),
-            last_duration: Default::default(),
+            stats: TaskStats::new(stats_type),
             #[cfg(feature = "track_wait_dependencies")]
             last_waiting_task: Default::default(),
         }
     }
 
-    fn new_scheduled_in_scope(id: TaskId, scope: TaskScopeId) -> Self {
+    fn new_scheduled_in_scope(id: TaskId, scope: TaskScopeId, stats_type: StatsType) -> Self {
         Self {
             scopes: TaskScopes::Inner(CountHashSet::from([scope]), 0),
             state_type: Scheduled {
@@ -178,9 +174,7 @@ impl TaskState {
             collectibles: Default::default(),
             output: Default::default(),
             cells: Default::default(),
-            executions: Default::default(),
-            total_duration: Default::default(),
-            last_duration: Default::default(),
+            stats: TaskStats::new(stats_type),
             #[cfg(feature = "track_wait_dependencies")]
             last_waiting_task: Default::default(),
         }
@@ -279,17 +273,23 @@ use crate::{
     output::Output,
     scope::{ScopeChildChangeEffect, TaskScopeId, TaskScopes},
     stats::{self, StatsReferences},
+    task_stats::TaskStats,
     MemoryBackend,
 };
 
 impl Task {
-    pub(crate) fn new_native(id: TaskId, inputs: Vec<TaskInput>, native_fn: FunctionId) -> Self {
+    pub(crate) fn new_native(
+        id: TaskId,
+        inputs: Vec<TaskInput>,
+        native_fn: FunctionId,
+        stats_type: StatsType,
+    ) -> Self {
         let bound_fn = registry::get_function(native_fn).bind(&inputs);
         Self {
             id,
             inputs,
             ty: TaskType::Native(native_fn, bound_fn),
-            state: RwLock::new(TaskState::new(id)),
+            state: RwLock::new(TaskState::new(id, stats_type)),
         }
     }
 
@@ -297,12 +297,13 @@ impl Task {
         id: TaskId,
         inputs: Vec<TaskInput>,
         native_fn: FunctionId,
+        stats_type: StatsType,
     ) -> Self {
         Self {
             id,
             inputs,
             ty: TaskType::ResolveNative(native_fn),
-            state: RwLock::new(TaskState::new(id)),
+            state: RwLock::new(TaskState::new(id, stats_type)),
         }
     }
 
@@ -311,12 +312,13 @@ impl Task {
         trait_type: TraitTypeId,
         trait_fn_name: Cow<'static, str>,
         inputs: Vec<TaskInput>,
+        stats_type: StatsType,
     ) -> Self {
         Self {
             id,
             inputs,
             ty: TaskType::ResolveTrait(trait_type, trait_fn_name),
-            state: RwLock::new(TaskState::new(id)),
+            state: RwLock::new(TaskState::new(id, stats_type)),
         }
     }
 
@@ -324,12 +326,13 @@ impl Task {
         id: TaskId,
         scope: TaskScopeId,
         functor: impl Fn() -> NativeTaskFuture + Sync + Send + 'static,
+        stats_type: StatsType,
     ) -> Self {
         Self {
             id,
             inputs: Vec::new(),
             ty: TaskType::Root(Box::new(functor)),
-            state: RwLock::new(TaskState::new_scheduled_in_scope(id, scope)),
+            state: RwLock::new(TaskState::new_scheduled_in_scope(id, scope, stats_type)),
         }
     }
 
@@ -337,12 +340,13 @@ impl Task {
         id: TaskId,
         scope: TaskScopeId,
         functor: impl Future<Output = Result<RawVc>> + Send + 'static,
+        stats_type: StatsType,
     ) -> Self {
         Self {
             id,
             inputs: Vec::new(),
             ty: TaskType::Once(Mutex::new(Some(Box::pin(functor)))),
-            state: RwLock::new(TaskState::new_scheduled_in_scope(id, scope)),
+            state: RwLock::new(TaskState::new_scheduled_in_scope(id, scope, stats_type)),
         }
     }
 
@@ -443,7 +447,7 @@ impl Task {
                 state.state_type = InProgress {
                     event: event.take(),
                 };
-                state.executions += 1;
+                state.stats.increment_executions();
                 // TODO we need to reconsider the approach of doing scope changes in background
                 // since they affect collectibles and need to be computed eagerly to allow
                 // strongly_consistent to work properly.
@@ -537,6 +541,7 @@ impl Task {
     pub(crate) fn execution_completed(
         &self,
         duration: Duration,
+        instant: Instant,
         backend: &MemoryBackend,
         turbo_tasks: &dyn TurboTasksBackendApi,
     ) -> bool {
@@ -545,8 +550,9 @@ impl Task {
         {
             let mut state = self.state.write();
 
-            state.total_duration += duration;
-            state.last_duration = duration.into();
+            state
+                .stats
+                .register_execution(duration, turbo_tasks.program_duration_until(instant));
             match state.state_type {
                 InProgress { ref mut event } => {
                     let event = event.take();
@@ -1216,9 +1222,7 @@ impl Task {
     /// For testing purposes
     pub fn reset_executions(&self) {
         let mut state = self.state.write();
-        if state.executions > 1 {
-            state.executions = 1;
-        }
+        state.stats.reset_executions()
     }
 
     pub fn is_pending(&self) -> bool {
@@ -1228,17 +1232,25 @@ impl Task {
 
     pub fn reset_stats(&self) {
         let mut state = self.state.write();
-        state.executions = 0;
-        state.total_duration = Duration::ZERO;
-        state.last_duration = SmallDuration::ZERO;
+        state.stats.reset();
     }
 
     pub fn get_stats_info(&self, backend: &MemoryBackend) -> TaskStatsInfo {
         let state = self.state.read();
+
+        let (total_duration, last_duration, executions) = match &state.stats {
+            TaskStats::Essential(stats) => (None, stats.last_duration(), None),
+            TaskStats::Full(stats) => (
+                Some(stats.total_duration()),
+                stats.last_duration(),
+                Some(stats.executions()),
+            ),
+        };
+
         TaskStatsInfo {
-            total_duration: state.total_duration,
-            last_duration: state.last_duration.into(),
-            executions: state.executions,
+            total_duration,
+            last_duration,
+            executions,
             root_scoped: matches!(state.scopes, TaskScopes::Root(_)),
             child_scopes: match state.scopes {
                 TaskScopes::Root(_) => 1,
@@ -1407,6 +1419,7 @@ impl Task {
         &self,
         strongly_consistent: bool,
         func: F,
+        note: impl Fn() -> String + Sync + Send + 'static,
         backend: &MemoryBackend,
         turbo_tasks: &dyn TurboTasksBackendApi,
     ) -> Result<Result<T, EventListener>> {
@@ -1443,7 +1456,7 @@ impl Task {
             | Scheduled { ref event }
             | InProgress { ref event }
             | InProgressDirty { ref event } => {
-                let listener = event.listen();
+                let listener = event.listen_with_note(note);
                 drop(state);
                 Ok(Err(listener))
             }
@@ -1611,9 +1624,9 @@ impl PartialEq for Task {
 impl Eq for Task {}
 
 pub struct TaskStatsInfo {
-    pub total_duration: Duration,
+    pub total_duration: Option<Duration>,
     pub last_duration: Duration,
-    pub executions: u32,
+    pub executions: Option<u32>,
     pub root_scoped: bool,
     pub child_scopes: usize,
     pub active: bool,

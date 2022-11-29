@@ -6,7 +6,7 @@ use std::{
     future::Future,
     pin::Pin,
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{anyhow, Result};
@@ -202,6 +202,7 @@ pub trait Backend: Sync + Send {
         &self,
         task: TaskId,
         duration: Duration,
+        instant: Instant,
         turbo_tasks: &dyn TurboTasksBackendApi,
     ) -> bool;
 

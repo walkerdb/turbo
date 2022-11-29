@@ -32,7 +32,7 @@ use crate::{
     timed_future::{self, TimedFuture},
     trace::TraceRawVcs,
     util::FormatDuration,
-    Nothing, NothingVc, SmallDuration, TaskId, ValueTraitVc, ValueTypeId,
+    Nothing, NothingVc, TaskId, ValueTraitVc, ValueTypeId,
 };
 
 pub trait TurboTasksCallApi: Sync + Send {
@@ -114,6 +114,18 @@ pub trait TurboTasksApi: TurboTasksCallApi + Sync + Send {
     fn update_current_task_cell(&self, index: CellId, content: CellContent);
 }
 
+/// The type of stats reporting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatsType {
+    /// Only report stats essential to Turbo Tasks' operation.
+    Essential,
+    /// Full stats reporting.
+    ///
+    /// This is useful for debugging, but it has a slight memory and performance
+    /// impact.
+    Full,
+}
+
 pub trait TaskIdProvider {
     fn get_fresh_task_id(&self) -> TaskId;
     /// # Safety
@@ -148,6 +160,25 @@ pub trait TurboTasksBackendApi: TaskIdProvider + TurboTasksCallApi + Sync + Send
     /// Enqueues tasks for notification of changed dependencies. This will
     /// eventually call `invalidate_tasks()` on all tasks.
     fn schedule_notify_tasks_set(&self, tasks: &HashSet<TaskId>);
+
+    /// Returns the stats reporting type.
+    fn stats_type(&self) -> StatsType;
+    /// Sets the stats reporting type.
+    fn set_stats_type(&self, stats_type: StatsType);
+    /// Returns the duration from the start of the program to the given instant.
+    fn program_duration_until(&self, instant: Instant) -> Duration;
+}
+
+impl StatsType {
+    /// Returns `true` if the stats type is `Essential`.
+    pub fn is_essential(self) -> bool {
+        matches!(self, Self::Essential)
+    }
+
+    /// Returns `true` if the stats type is `Full`.
+    pub fn is_full(self) -> bool {
+        matches!(self, Self::Full)
+    }
 }
 
 impl TaskIdProvider for &dyn TurboTasksBackendApi {
@@ -181,10 +212,14 @@ pub struct TurboTasks<B: Backend + 'static> {
     scheduled_tasks: AtomicUsize,
     start: Mutex<Option<Instant>>,
     aggregated_update: Mutex<Option<(Duration, usize, IndexMap<&'static str, (Duration, usize)>)>>,
-    aggregated_task_timings: ConcurrentQueue<(&'static str, SmallDuration)>,
+    aggregated_task_timings: ConcurrentQueue<(&'static str, Duration)>,
     event: Event,
     event_foreground: Event,
     event_background: Event,
+    // NOTE(alexkirsz) We use an atomic bool instead of a lock around `StatsType` to avoid the
+    // locking overhead.
+    enable_full_stats: AtomicBool,
+    program_start: Instant,
 }
 
 struct CurrentTaskInfo {
@@ -232,6 +267,8 @@ impl<B: Backend> TurboTasks<B> {
             event: Event::new(|| "TurboTasks::event".to_string()),
             event_foreground: Event::new(|| "TurboTasks::event_foreground".to_string()),
             event_background: Event::new(|| "TurboTasks::event_background".to_string()),
+            enable_full_stats: AtomicBool::new(false),
+            program_start: Instant::now(),
         });
         this.backend.startup(&*this);
         this
@@ -260,6 +297,7 @@ impl<B: Backend> TurboTasks<B> {
     // TODO make sure that all dependencies settle before reading them
     /// Creates a new root task, that is only executed once.
     /// Dependencies will not invalidate the task.
+    #[track_caller]
     pub fn spawn_once_task(
         &self,
         reason: &'static str,
@@ -336,6 +374,7 @@ impl<B: Backend> TurboTasks<B> {
         ))
     }
 
+    #[track_caller]
     pub(crate) fn schedule(&self, task_id: TaskId, reason: &'static str) {
         self.begin_primary_job();
         self.scheduled_tasks.fetch_add(1, Ordering::AcqRel);
@@ -352,12 +391,12 @@ impl<B: Backend> TurboTasks<B> {
                 }
                 if let Some(execution) = this.backend.try_start_task_execution(task_id, &*this) {
                     // Setup thread locals
-                    let (result, duration) = CELL_COUNTERS
+                    let (result, duration, instant) = CELL_COUNTERS
                         .scope(Default::default(), async {
-                            let (result, duration) =
+                            let (result, duration, instant) =
                                 TimedFuture::new(AssertUnwindSafe(execution.future).catch_unwind())
                                     .await;
-                            (result, duration)
+                            (result, duration, instant)
                         })
                         .await;
                     if cfg!(feature = "log_function_stats") && duration.as_millis() > 1000 {
@@ -378,7 +417,7 @@ impl<B: Backend> TurboTasks<B> {
                     this.notify_scheduled_tasks_internal();
                     let reexecute = this
                         .backend
-                        .task_execution_completed(task_id, duration, &*this);
+                        .task_execution_completed(task_id, duration, instant, &*this);
                     total_duration += duration;
                     if !reexecute {
                         break;
@@ -404,7 +443,10 @@ impl<B: Backend> TurboTasks<B> {
         );
 
         #[cfg(feature = "tokio_tracing")]
-        tokio::task::Builder::new().name(&description).spawn(future);
+        tokio::task::Builder::new()
+            .name(&description)
+            .spawn(future)
+            .unwrap();
         #[cfg(not(feature = "tokio_tracing"))]
         tokio::task::spawn(future);
     }
@@ -425,7 +467,7 @@ impl<B: Backend> TurboTasks<B> {
             .fetch_add(1, Ordering::AcqRel);
     }
 
-    fn finish_primary_job(&self, timing: Option<(&'static str, SmallDuration)>) {
+    fn finish_primary_job(&self, timing: Option<(&'static str, Duration)>) {
         if let Some(timing) = timing {
             let _ = self.aggregated_task_timings.push(timing);
         }
@@ -502,7 +544,9 @@ impl<B: Backend> TurboTasks<B> {
         &self,
         aggregation: Duration,
     ) -> (Duration, usize, IndexMap<&'static str, (Duration, usize)>) {
-        let listener = self.event.listen();
+        let listener = self
+            .event
+            .listen_with_note(|| "wait for update info".to_string());
         if aggregation.is_zero() {
             if let Some(info) = self.aggregated_update.lock().unwrap().take() {
                 return info;
@@ -559,6 +603,7 @@ impl<B: Backend> TurboTasks<B> {
         self.backend.stop(self);
     }
 
+    #[track_caller]
     pub(crate) fn schedule_background_job<
         T: FnOnce(Arc<TurboTasks<B>>) -> F + Send + 'static,
         F: Future<Output = ()> + Send + 'static,
@@ -590,6 +635,7 @@ impl<B: Backend> TurboTasks<B> {
         }));
     }
 
+    #[track_caller]
     pub(crate) fn schedule_foreground_job<
         T: FnOnce(Arc<TurboTasks<B>>) -> F + Send + 'static,
         F: Future<Output = ()> + Send + 'static,
@@ -640,6 +686,7 @@ impl<B: Backend> TurboTasksCallApi for TurboTasks<B> {
         self.trait_call(trait_type, trait_fn_name, inputs)
     }
 
+    #[track_caller]
     fn run_once(
         &self,
         reason: &'static str,
@@ -651,6 +698,7 @@ impl<B: Backend> TurboTasksCallApi for TurboTasks<B> {
         })
     }
 
+    #[track_caller]
     fn run_once_process(
         &self,
         reason: &'static str,
@@ -792,11 +840,13 @@ impl<B: Backend> TurboTasksBackendApi for TurboTasks<B> {
     fn pin(&self) -> Arc<dyn TurboTasksBackendApi> {
         self.pin()
     }
+    #[track_caller]
     fn schedule_backend_background_job(&self, id: BackendJobId) {
         self.schedule_background_job(move |this| async move {
             this.backend.run_backend_job(id, &*this).await;
         })
     }
+    #[track_caller]
     fn schedule_backend_foreground_job(&self, id: BackendJobId) {
         self.schedule_foreground_job(move |this| async move {
             this.backend.run_backend_job(id, &*this).await;
@@ -858,8 +908,27 @@ impl<B: Backend> TurboTasksBackendApi for TurboTasks<B> {
         }
     }
 
+    #[track_caller]
     fn schedule(&self, task: TaskId, reason: &'static str) {
         self.schedule(task, reason)
+    }
+
+    fn stats_type(&self) -> StatsType {
+        match self.enable_full_stats.load(Ordering::Acquire) {
+            true => StatsType::Full,
+            false => StatsType::Essential,
+        }
+    }
+
+    fn set_stats_type(&self, stats_type: StatsType) {
+        match stats_type {
+            StatsType::Full => self.enable_full_stats.store(true, Ordering::Release),
+            StatsType::Essential => self.enable_full_stats.store(false, Ordering::Release),
+        }
+    }
+
+    fn program_duration_until(&self, instant: Instant) -> Duration {
+        instant - self.program_start
     }
 }
 
