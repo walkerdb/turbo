@@ -46,6 +46,10 @@ impl<T, H> CountHashSet<T, H> {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    pub fn is_unset(&self) -> bool {
+        self.inner.is_empty()
+    }
 }
 
 impl<T: Eq + Hash, H: BuildHasher> CountHashSet<T, H> {

@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{hash_map::Entry, HashMap, HashSet},
     fmt::{Debug, Display},
     hash::Hash,
     mem::take,
@@ -386,8 +386,12 @@ impl TaskScope {
         reader: TaskId,
     ) {
         let mut state = self.state.lock();
-        if let Some((_, dependent_tasks)) = state.collectibles.get_mut(&trait_type) {
+        if let Entry::Occupied(mut entry) = state.collectibles.entry(trait_type) {
+            let (collectibles, dependent_tasks) = entry.get_mut();
             dependent_tasks.remove(&reader);
+            if dependent_tasks.is_empty() && collectibles.is_unset() {
+                entry.remove();
+            }
         }
     }
 }
@@ -534,14 +538,33 @@ impl TaskScopeState {
         collectible: RawVc,
         count: usize,
     ) -> Option<ScopeCollectibleChangeEffect> {
-        let (collectibles, dependent_tasks) = self.collectibles.entry(trait_id).or_default();
-        if collectibles.add_count(collectible, count) {
-            log_scope_update!("add_collectible {} -> {}", *self.id, collectible);
-            Some(ScopeCollectibleChangeEffect {
-                notify: take(dependent_tasks),
-            })
-        } else {
-            None
+        match self.collectibles.entry(trait_id) {
+            Entry::Occupied(mut entry) => {
+                let (collectibles, dependent_tasks) = entry.get_mut();
+                if collectibles.add_count(collectible, count) {
+                    log_scope_update!("add_collectible {} -> {}", *self.id, collectible);
+                    Some(ScopeCollectibleChangeEffect {
+                        notify: take(dependent_tasks),
+                    })
+                } else {
+                    if collectibles.is_unset() && dependent_tasks.is_empty() {
+                        entry.remove();
+                    }
+                    None
+                }
+            }
+            Entry::Vacant(entry) => {
+                let result = entry
+                    .insert(Default::default())
+                    .0
+                    .add_count(collectible, count);
+                // It's always a new entry
+                debug_assert!(result);
+                log_scope_update!("add_collectible {} -> {}", *self.id, collectible);
+                Some(ScopeCollectibleChangeEffect {
+                    notify: HashSet::new(),
+                })
+            }
         }
     }
 
@@ -567,14 +590,31 @@ impl TaskScopeState {
         collectible: RawVc,
         count: usize,
     ) -> Option<ScopeCollectibleChangeEffect> {
-        let (collectibles, dependent_tasks) = self.collectibles.entry(trait_id).or_default();
-        if collectibles.remove_count(collectible, count) {
-            log_scope_update!("remove_collectible {} -> {}", *self.id, collectible);
-            Some(ScopeCollectibleChangeEffect {
-                notify: take(dependent_tasks),
-            })
-        } else {
-            None
+        match self.collectibles.entry(trait_id) {
+            Entry::Occupied(mut entry) => {
+                let (collectibles, dependent_tasks) = entry.get_mut();
+                if collectibles.remove_count(collectible, count) {
+                    let notify = take(dependent_tasks);
+                    debug_assert!(dependent_tasks.is_empty());
+                    if collectibles.is_unset() {
+                        entry.remove();
+                    }
+                    log_scope_update!("remove_collectible {} -> {}", *self.id, collectible);
+                    Some(ScopeCollectibleChangeEffect { notify })
+                } else {
+                    None
+                }
+            }
+            Entry::Vacant(e) => {
+                let result = e
+                    .insert(Default::default())
+                    .0
+                    .remove_count(collectible, count);
+
+                // This is never visible from outside
+                debug_assert!(!result);
+                None
+            }
         }
     }
 
