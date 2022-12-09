@@ -90,4 +90,7 @@ jobs:
         uses: actions/upload-artifact@v3
         with:
           name: turbo-lib-cross-${{ inputs.release_branch }}
-          path: cli/dist-cross
+          path: |
+            cli/dist-cross
+            cli/libturbo.h
+            cli/turbo.h
