@@ -55,7 +55,9 @@ jobs:
         uses: actions/upload-artifact@v3
         with:
           name: turbo-lib-darwin-${{ inputs.release_branch }}
-          path: cli/dist-darwin
+          path: |
+            cli/dist-darwin
+            cli/libturbo.h
 
   # compiles linux and windows in a container
   cross:
