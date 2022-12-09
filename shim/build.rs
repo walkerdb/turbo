@@ -1,19 +1,32 @@
 use std::{env, path::PathBuf, process::Command};
 
 fn main() {
-    let is_release = matches!(env::var("PROFILE"), Ok(profile) if profile == "release");
-    let lib_search_path = if is_release && env::var("RELEASE_TURBO_CLI") == Ok("true".to_string()) {
+    let is_ci_release = matches!(env::var("PROFILE"), Ok(profile) if profile == "release")
+        && env::var("RELEASE_TURBO_CLI")
+            .map(|val| val == "true")
+            .unwrap_or(false);
+    let lib_search_path = if is_ci_release {
         expect_release_lib()
     } else {
         build_debug_libturbo()
     };
-    println!("cargo:rerun-if-changed={}", lib_search_path);
-    println!("cargo:rustc-link-search={}", lib_search_path);
+    println!(
+        "cargo:rerun-if-changed={}",
+        lib_search_path.to_string_lossy()
+    );
+    println!(
+        "cargo:rustc-link-search={}",
+        lib_search_path.to_string_lossy()
+    );
     println!("cargo:rustc-link-lib=turbo");
 
     let target = build_target::target().unwrap();
     let bindings = bindgen::Builder::default()
-        .header(header_path(&target.os))
+        .header(
+            lib_search_path
+                .join(header_file(&target.os))
+                .to_string_lossy(),
+        )
         // Tell cargo to invalidate the built crate whenever any of the
         // included header files changed.
         .parse_callbacks(Box::new(bindgen::CargoCallbacks))
@@ -31,7 +44,7 @@ fn main() {
     }
 }
 
-fn expect_release_lib() -> String {
+fn expect_release_lib() -> PathBuf {
     let target = build_target::target().unwrap();
     let platform = match target.os {
         build_target::Os::MacOs => "darwin",
@@ -49,10 +62,10 @@ fn expect_release_lib() -> String {
     // turbo-${OS}
     dir.push(format!("turbo-{platform}_{platform}_{arch}"));
     dir.push("lib");
-    dir.to_string_lossy().to_string()
+    dir
 }
 
-fn build_debug_libturbo() -> String {
+fn build_debug_libturbo() -> PathBuf {
     let cli_path = env::var_os("CARGO_WORKSPACE_DIR")
         .map(PathBuf::from)
         .unwrap()
@@ -89,12 +102,12 @@ fn build_debug_libturbo() -> String {
             .success(),
         "failed to build turbo static library"
     );
-    cli_path.to_string_lossy().to_string()
+    cli_path
 }
 
-fn header_path(target: &build_target::Os) -> &'static str {
+fn header_file(target: &build_target::Os) -> &'static str {
     match target {
-        build_target::Os::Windows => "../cli/turbo.h",
-        _ => "../cli/libturbo.h",
+        build_target::Os::Windows => "turbo.h",
+        _ => "libturbo.h",
     }
 }
