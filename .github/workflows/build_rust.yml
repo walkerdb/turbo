@@ -87,7 +87,7 @@ jobs:
           # https://github.com/actions/download-artifact#download-all-artifacts
           name: ${{ matrix.settings.lib-cache-key }}
           # Optional, a directory where to extract artifact(s), defaults to the current directory
-          path: shim/libturbo
+          path: cli/libturbo
           # Optional, choose how to exit the action if no artifact is found
           # can be one of:
           #  "fail", "warn", "ignore"
