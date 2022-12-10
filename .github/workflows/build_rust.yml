@@ -42,7 +42,7 @@ jobs:
 
       - name: Install
         uses: actions-rs/toolchain@v1
-        if: ${{ !matrix.settings.docker && matrix.settings.host != "windows-latest" }}
+        if: ${{ !matrix.settings.docker && matrix.settings.host != 'windows-latest' }}
         with:
           profile: minimal
           override: true
@@ -50,7 +50,7 @@ jobs:
 
       - name: Install
         shell: bash
-        if: ${{ !matrix.settings.docker && matrix.settings.host == "windows-latest" }}
+        if: ${{ !matrix.settings.docker && matrix.settings.host == 'windows-latest' }}
         run: rustup set default-host x86_64-pc-windows-gnu && rustup show
 
       # - name: Cache cargo registry
