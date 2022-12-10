@@ -45,6 +45,8 @@ fn main() {
 }
 
 fn expect_release_lib() -> PathBuf {
+    // We expect all artifacts to be in the cli path
+    let mut dir = cli_path();
     let target = build_target::target().unwrap();
     let platform = match target.os {
         build_target::Os::MacOs => "darwin",
@@ -57,7 +59,7 @@ fn expect_release_lib() -> PathBuf {
         build_target::Arch::X86_64 => "amd64_v1",
         _ => panic!("unsupported target {}", target.triple),
     };
-    let mut dir = PathBuf::from("libturbo");
+    dir.push("libturbo");
     // format is ${BUILD_ID}_${OS}_${ARCH}. Build id is, for goreleaser reasons,
     // turbo-${OS}
     dir.push(format!("turbo-{platform}_{platform}_{arch}"));
@@ -66,10 +68,7 @@ fn expect_release_lib() -> PathBuf {
 }
 
 fn build_debug_libturbo() -> PathBuf {
-    let cli_path = env::var_os("CARGO_WORKSPACE_DIR")
-        .map(PathBuf::from)
-        .unwrap()
-        .join("cli");
+    let cli_path = cli_path();
     let target = build_target::target().unwrap();
     let mut cmd = Command::new("make");
     cmd.current_dir(&cli_path);
@@ -103,6 +102,13 @@ fn build_debug_libturbo() -> PathBuf {
         "failed to build turbo static library"
     );
     cli_path
+}
+
+fn cli_path() -> PathBuf {
+    env::var_os("CARGO_WORKSPACE_DIR")
+        .map(PathBuf::from)
+        .unwrap()
+        .join("cli")
 }
 
 fn header_file(target: &build_target::Os) -> &'static str {
