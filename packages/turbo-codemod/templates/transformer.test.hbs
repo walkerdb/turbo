@@ -1,0 +1,7 @@
+import { transformer } from "../src/transforms/{{name}}"; import {
+setupTestFixtures } from "./test-utils"; describe("{{name}}", () => {
+test("basic", () => { // load the fixture for the test const { root, read,
+cleanup } = setupTestFixtures({ fixture: "{{name}}/specific-fixture", }); // run
+the transformer const result = transformer({ root, options: { force: false, dry:
+false, print: false }, }); // result should be correct
+expect(result.toObject()).toMatchInlineSnapshot(); cleanup(); }); });
