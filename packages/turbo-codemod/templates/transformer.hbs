@@ -18,8 +18,16 @@ export function transformer({
   });
 
   log.info("Short description about {{ name }}")
+
   /*
-    add transform logic here!
+    Make changes to required files, and track each modified file with:
+
+    runner.modifyFile({
+      filePath: packageJsonPath,   // absolute path to file
+      after: transformedFile,      // file after modifications have been made
+    });
+
+    This automatically handles all cases of print / dry etc.
   */
 
   return runner.finish();

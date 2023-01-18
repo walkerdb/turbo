@@ -6,11 +6,12 @@ describe("{{ name }}", () => {
   test("basic", () => {
 
     // load the fixture for the test
-    const { root, read } = useFixture({
+    const { root, read, readJson } = useFixture({
       fixture: "specific-fixture",
     });
 
     // run the transformer
+    expect(result.fatalError).toBeUndefined();
     const result = transformer({
       root,
       options: { force: false, dry: false, print: false },
