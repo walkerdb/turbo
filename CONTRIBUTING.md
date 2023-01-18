@@ -10,6 +10,7 @@ Thanks for your interest in contributing to Turbo!
     - [Running Turborepo Tests](#running-turborepo-tests)
       - [Go Tests](#go-tests)
       - [Rust Tests](#rust-tests)
+    - [Linting](#linting)
   - [Debugging Turborepo](#debugging-turborepo)
   - [Benchmarking Turborepo](#benchmarking-turborepo)
   - [Updating `turbo`](#updating-turbo)
@@ -58,6 +59,11 @@ The recommended way to run tests is: `cargo nextest run -p turborepo-lib`.
 You'll have to [install it first](https://nexte.st/book/pre-built-binaries.html).
 
 You can also use the built in [`cargo test`](https://doc.rust-lang.org/cargo/commands/cargo-test.html) directly `cargo test -p turborepo-lib`.
+
+### Linting
+
+1. Install [`golangci-lint`](https://golangci-lint.run/)
+2. `pnpm run --filter=cli lint`
 
 ## Debugging Turborepo
 
