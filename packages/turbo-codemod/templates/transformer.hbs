@@ -1,5 +1,5 @@
 import { TransformerArgs } from "../types";
-import TransformerResult from "../utils/transformerResult";
+import { TransformerResults } from "../runner";
 import getTransformerHelpers from "../utils/getTransformerHelpers";
 
 // transformer details
@@ -7,17 +7,22 @@ const TRANSFORMER = "{{ name }}";
 const DESCRIPTION = "{{ description }}";
 const INTRODUCED_IN = "{{ introducedIn }}";
 
-export function transformer({ root, options }: TransformerArgs): TransformerResult {
-  const { log, result } = getTransformerHelpers({
+export function transformer({
+  root,
+  options,
+}: TransformerArgs): TransformerResults {
+  const { log, runner } = getTransformerHelpers({
     transformer: TRANSFORMER,
+    rootPath: root,
     options,
   });
 
+  log.info("Short description about {{ name }}")
   /*
     add transform logic here!
   */
 
-  return result;
+  return runner.finish();
 }
 
 const transformerMeta = {
@@ -28,3 +33,5 @@ const transformerMeta = {
 };
 
 export default transformerMeta;
+
+

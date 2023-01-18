@@ -4,8 +4,7 @@ import getWorkspaceImplementation from "../utils/getWorkspaceImplementation";
 import getPackageManagerVersion from "../utils/getPackageManagerVersion";
 import fs from "fs-extra";
 import getTransformerHelpers from "../utils/getTransformerHelpers";
-import { TransformerResults, FileDiffer, FileWriter } from "../runner";
-import { diffJson } from "diff";
+import { TransformerResults } from "../runner";
 
 // transformer details
 const TRANSFORMER = "add-package-manager";
