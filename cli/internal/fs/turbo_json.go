@@ -159,7 +159,9 @@ func (to TaskOutputs) Sort() TaskOutputs {
 	return TaskOutputs{Inclusions: inclusions, Exclusions: exclusions}
 }
 
-// ReadTurboConfigOnly reads turbo.json from its path
+// ReadTurboConfiFromPath reads turbo.json from a provided path
+// It does not fallback on package.json like ReadTurboConfig
+// TODO(mehulkar): use this in ReadTurboConfig
 func ReadTurboConfiFromPath(turboJSONPath turbopath.AbsoluteSystemPath) (*TurboJSON, error) {
 	// If the configFile exists, use that
 	if turboJSONPath.FileExists() {
